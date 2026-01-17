@@ -1,0 +1,7 @@
+{
+  "name": "Velocity - Advanced Speed Test",
+  "description": "A high-performance, visually stunning internet speed testing platform featuring real-time data visualization and detailed network diagnostics.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
