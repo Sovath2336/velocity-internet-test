@@ -20,31 +20,6 @@
   <meta property="og:description" content="Check your connection quality in seconds with high-precision network metrics.">
   <meta property="og:image" content="https://images.unsplash.com/photo-1558494949-ef010cbdcc31?q=80&w=1200&h=630&fit=crop">
 
-  <!-- Twitter -->
-  <meta property="twitter:card" content="summary_large_image">
-  <meta property="twitter:url" content="https://velocity-speedtest.app/">
-  <meta property="twitter:title" content="Velocity - Advanced Real-Time Speed Test">
-  <meta property="twitter:description" content="Check your connection quality in seconds with high-precision network metrics.">
-  <meta property="twitter:image" content="https://images.unsplash.com/photo-1558494949-ef010cbdcc31?q=80&w=1200&h=630&fit=crop">
-
-  <!-- Structured Data (JSON-LD) -->
-  <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@type": "WebApplication",
-      "name": "Velocity Speed Test",
-      "url": "https://velocity-speedtest.app",
-      "description": "High-precision internet speed testing tool for measuring download, upload, and latency.",
-      "applicationCategory": "UtilitiesApplication",
-      "operatingSystem": "All",
-      "offers": {
-        "@type": "Offer",
-        "price": "0",
-        "priceCurrency": "USD"
-      }
-    }
-  </script>
-
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
@@ -55,10 +30,12 @@
       color: #ffffff;
       margin: 0;
       overflow-x: hidden;
+      min-height: 100vh;
     }
     .glass {
       background: rgba(255, 255, 255, 0.03);
       backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
       border: 1px solid rgba(255, 255, 255, 0.1);
     }
     .gradient-text {
@@ -66,27 +43,23 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    .neon-pulse {
-      animation: pulse 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.5; transform: scale(1.05); }
-    }
   </style>
 <script type="importmap">
 {
   "imports": {
-    "recharts": "https://esm.sh/recharts@^3.6.0",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
+    "react": "https://esm.sh/react@19.0.0",
+    "react-dom": "https://esm.sh/react-dom@19.0.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
+    "recharts": "https://esm.sh/recharts@2.15.0",
+    "@google/genai": "https://esm.sh/@google/genai@1.37.0",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.37.0"
+    "react/": "https://esm.sh/react@^19.2.3/"
   }
 }
 </script>
 </head>
 <body>
   <div id="root"></div>
+  <script type="module" src="./index.tsx"></script>
 </body>
 </html>
