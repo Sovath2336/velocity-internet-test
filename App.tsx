@@ -244,9 +244,20 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col items-center p-4 md:p-8 max-w-[100vw] overflow-x-hidden">
+      <style>{`
+        @keyframes invite-pulse {
+          0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
+          50% { transform: scale(1.05); box-shadow: 0 0 20px 10px rgba(37, 99, 235, 0); }
+          100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+        }
+        .pulse-inviting {
+          animation: invite-pulse 2s infinite ease-in-out;
+        }
+      `}</style>
+
       {showResultOverlay && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="glass w-full max-w-md rounded-[2.5rem] p-6 md:p-10 text-center relative animate-in zoom-in-95 duration-500">
+          <div className="glass w-full max-md rounded-[2.5rem] p-6 md:p-10 text-center relative animate-in zoom-in-95 duration-500">
             <button onClick={() => setShowResultOverlay(false)} className="absolute top-6 right-6 opacity-40 hover:opacity-100"><i className="fa-solid fa-xmark text-xl"></i></button>
             <h2 className="text-3xl font-black mb-6 uppercase tracking-tighter">Engine Result</h2>
             <div className="grid grid-cols-2 gap-3 mb-6">
@@ -263,7 +274,7 @@ const App: React.FC = () => {
               <button onClick={shareResult} className="w-full py-4 glass border-white/10 rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center gap-2">
                 <i className="fa-solid fa-share"></i> Share
               </button>
-              <button onClick={startTest} className="w-full py-5 bg-blue-600 rounded-xl font-bold uppercase tracking-[0.2em] text-sm shadow-lg shadow-blue-600/30">
+              <button onClick={startTest} className="w-full py-5 bg-blue-600 rounded-xl font-bold uppercase tracking-[0.2em] text-sm shadow-lg shadow-blue-600/30 pulse-inviting">
                 Test Again
               </button>
             </div>
@@ -326,7 +337,7 @@ const App: React.FC = () => {
                 <button 
                   onClick={startTest} 
                   disabled={phase !== TestPhase.IDLE && phase !== TestPhase.COMPLETE} 
-                  className="w-48 md:w-64 py-5 md:py-6 bg-blue-600 hover:bg-blue-500 rounded-2xl md:rounded-3xl font-black text-lg md:text-xl tracking-[0.2em] shadow-xl shadow-blue-600/40 active:scale-95 transition-all disabled:opacity-20"
+                  className={`w-48 md:w-64 py-5 md:py-6 bg-blue-600 hover:bg-blue-500 rounded-2xl md:rounded-3xl font-black text-lg md:text-xl tracking-[0.2em] shadow-xl shadow-blue-600/40 active:scale-95 transition-all disabled:opacity-20 ${(phase === TestPhase.IDLE || phase === TestPhase.COMPLETE) ? 'pulse-inviting' : ''}`}
                 >
                   {phase === TestPhase.IDLE || phase === TestPhase.COMPLETE ? 'START' : 'TESTING'}
                 </button>
