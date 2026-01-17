@@ -1,11 +1,18 @@
 {
   "name": "Velocity - Advanced Speed Test",
   "short_name": "Velocity",
-  "description": "A high-performance, visually stunning internet speed testing platform featuring real-time data visualization and detailed network diagnostics.",
+  "description": "High-precision internet speed testing platform with real-time diagnostics.",
   "start_url": ".",
   "display": "standalone",
   "theme_color": "#050505",
   "background_color": "#050505",
+  "icons": [
+    {
+      "src": "https://images.unsplash.com/photo-1558494949-ef010cbdcc31?q=80&w=192&h=192&fit=crop",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ],
   "requestFramePermissions": [
     "geolocation"
   ]
