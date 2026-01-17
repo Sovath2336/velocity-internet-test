@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 
 // --- TYPES ---
 enum TestPhase { IDLE = 'IDLE', PING = 'PING', DOWNLOAD = 'DOWNLOAD', TRANSITION = 'TRANSITION', UPLOAD = 'UPLOAD', COMPLETE = 'COMPLETE' }
@@ -69,7 +69,6 @@ const SpeedGauge: React.FC<{ value: number; phase: string; progress: number; }> 
 
   return (
     <div className="relative w-64 h-64 md:w-[420px] md:h-[420px] flex items-center justify-center">
-      {/* Background Track */}
       <svg className="absolute inset-0 w-full h-full transform -rotate-90">
         <circle cx="50%" cy="50%" r="42%" fill="transparent" stroke="rgba(255,255,255,0.03)" strokeWidth="12" />
         <circle
@@ -86,7 +85,6 @@ const SpeedGauge: React.FC<{ value: number; phase: string; progress: number; }> 
         />
       </svg>
       
-      {/* Testing Indicators (Visual Waves) */}
       {(phase === 'DOWNLOAD' || phase === 'UPLOAD') && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className={`absolute w-full h-full rounded-full border-4 opacity-0 animate-ping-slow`} 
@@ -96,7 +94,6 @@ const SpeedGauge: React.FC<{ value: number; phase: string; progress: number; }> 
         </div>
       )}
 
-      {/* Visual Content */}
       <div className="absolute inset-0 flex flex-col items-center justify-center z-10 text-center px-8">
         <div className={`text-xs md:text-sm font-bold uppercase tracking-[0.4em] mb-2 transition-colors duration-500 ${theme.text}`}>
           {phase === 'IDLE' ? 'System Ready' : 
@@ -113,7 +110,6 @@ const SpeedGauge: React.FC<{ value: number; phase: string; progress: number; }> 
         </div>
       </div>
 
-      {/* Needle */}
       <div 
         className="absolute top-1/2 left-1/2 w-1 md:w-1.5 h-[42%] origin-bottom transition-transform duration-200 ease-out will-change-transform"
         style={{ transform: `translate(-50%, -100%) rotate(${rotation}deg)`, opacity: phase === 'IDLE' ? 0.2 : 1 }}
@@ -136,8 +132,7 @@ const SERVERS = [
 const TEST_CONFIG = {
   DURATION: 12000,
   RAMP_UP: 2500,
-  WORKERS: 10,
-  SAMPLING_INTERVAL: 100
+  THREADS: 12, // Increased for better saturation
 };
 
 const App: React.FC = () => {
@@ -158,11 +153,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const saved = localStorage.getItem('velocity_v2_history');
     if (saved) try { setHistory(JSON.parse(saved)); } catch (e) {}
-    
-    fetch('https://ipapi.co/json/')
-      .then(res => res.json())
-      .then(data => setProvider(data.org || "Global ISP"))
-      .catch(() => setProvider("External Network"));
+    fetch('https://ipapi.co/json/').then(res => res.json()).then(data => setProvider(data.org || "Global ISP")).catch(() => setProvider("External Network"));
   }, []);
 
   useEffect(() => {
@@ -177,12 +168,15 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [phase, selectedServer]);
 
-  const runEngine = async (type: 'DOWNLOAD' | 'UPLOAD') => {
+  const runTest = async (type: 'DOWNLOAD' | 'UPLOAD') => {
     setPhase(type === 'DOWNLOAD' ? TestPhase.DOWNLOAD : TestPhase.UPLOAD);
     const start = performance.now();
-    const ctrl = new AbortController();
-    const streamBytes = new Array(TEST_CONFIG.WORKERS).fill(0);
+    const threadLoads = new Array(TEST_CONFIG.THREADS).fill(0);
     const samples: number[] = [];
+    const activeRequests: XMLHttpRequest[] = [];
+    
+    // Large upload payload for accuracy
+    const uploadChunk = new Uint8Array(4 * 1024 * 1024);
 
     const updateUI = () => {
       const now = performance.now();
@@ -191,53 +185,79 @@ const App: React.FC = () => {
       setProgress(currentProgress);
 
       if (elapsed > TEST_CONFIG.RAMP_UP) {
-        const total = streamBytes.reduce((a, b) => a + b, 0);
-        const mbps = (total * 8) / ((elapsed) * 1000);
+        const totalBytes = threadLoads.reduce((a, b) => a + b, 0);
+        const mbps = (totalBytes * 8) / (elapsed * 1000);
         samples.push(mbps);
         setGaugeValue(mbps);
         if (type === 'DOWNLOAD') setDownloadSpeed(mbps); else setUploadSpeed(mbps);
       }
-    };
 
-    const ticker = setInterval(updateUI, TEST_CONFIG.SAMPLING_INTERVAL);
-
-    const worker = async (id: number) => {
-      while (performance.now() - start < TEST_CONFIG.DURATION) {
-        try {
-          const url = `${type === 'DOWNLOAD' ? selectedServer.downloadUrl : selectedServer.uploadUrl}?worker=${id}&t=${Date.now()}`;
-          if (type === 'DOWNLOAD') {
-            const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
-            const reader = res.body?.getReader();
-            if (!reader) break;
-            while(true) {
-              const { done, value } = await reader.read();
-              if (done || ctrl.signal.aborted) break;
-              streamBytes[id] += value.length;
-              if (performance.now() - start >= TEST_CONFIG.DURATION) { ctrl.abort(); break; }
-            }
-          } else {
-            const payload = new Uint8Array(2 * 1024 * 1024);
-            await fetch(url, { method: 'POST', body: payload, signal: ctrl.signal, cache: 'no-store' });
-            streamBytes[id] += payload.length;
-          }
-        } catch (e) {
-          if (e instanceof Error && e.name === 'AbortError') break;
-          await new Promise(r => setTimeout(r, 100));
-        }
+      if (elapsed < TEST_CONFIG.DURATION) {
+        requestAnimationFrame(updateUI);
       }
     };
 
-    const cluster = Array.from({ length: TEST_CONFIG.WORKERS }).map((_, i) => worker(i));
-    const safety = setTimeout(() => ctrl.abort(), TEST_CONFIG.DURATION + 1000);
+    requestAnimationFrame(updateUI);
 
-    await Promise.all(cluster);
-    clearInterval(ticker);
-    clearTimeout(safety);
+    const spawnThread = (id: number) => {
+      return new Promise<void>((resolve) => {
+        const loop = () => {
+          const now = performance.now();
+          if (now - start >= TEST_CONFIG.DURATION) {
+            resolve();
+            return;
+          }
+
+          const xhr = new XMLHttpRequest();
+          activeRequests.push(xhr);
+          const url = `${type === 'DOWNLOAD' ? selectedServer.downloadUrl : selectedServer.uploadUrl}?t=${Date.now()}&w=${id}`;
+          
+          xhr.open(type === 'DOWNLOAD' ? 'GET' : 'POST', url, true);
+          
+          let lastLoaded = 0;
+          const onProgress = (e: ProgressEvent) => {
+            const currentNow = performance.now();
+            if (currentNow - start >= TEST_CONFIG.DURATION) {
+              xhr.abort();
+              return;
+            }
+            const delta = e.loaded - lastLoaded;
+            threadLoads[id] += delta;
+            lastLoaded = e.loaded;
+          };
+
+          if (type === 'DOWNLOAD') {
+            xhr.onprogress = onProgress;
+          } else {
+            xhr.upload.onprogress = onProgress;
+          }
+
+          xhr.onload = xhr.onerror = xhr.onabort = () => {
+            if (performance.now() - start < TEST_CONFIG.DURATION) {
+              loop();
+            } else {
+              resolve();
+            }
+          };
+
+          if (type === 'UPLOAD') {
+            xhr.send(uploadChunk);
+          } else {
+            xhr.send();
+          }
+        };
+        loop();
+      });
+    };
+
+    await Promise.all(Array.from({ length: TEST_CONFIG.THREADS }).map((_, i) => spawnThread(i)));
+    activeRequests.forEach(xhr => xhr.abort());
 
     if (samples.length === 0) return 0;
+    // Accuracy strategy: discard extremes, use mid-to-high percentile for "stable peak"
     const sorted = samples.sort((a, b) => a - b);
-    const trimmed = sorted.slice(Math.floor(sorted.length * 0.2), Math.floor(sorted.length * 0.9));
-    return trimmed.length > 0 ? trimmed.reduce((a, b) => a + b, 0) / trimmed.length : sorted[sorted.length - 1];
+    const validSamples = sorted.slice(Math.floor(sorted.length * 0.3), Math.floor(sorted.length * 0.9));
+    return validSamples.length > 0 ? validSamples.reduce((a, b) => a + b, 0) / validSamples.length : sorted[sorted.length - 1];
   };
 
   const startTest = async () => {
@@ -263,14 +283,14 @@ const App: React.FC = () => {
     setPing(avgPing);
     setJitter(Math.round(sortedPings[sortedPings.length - 1] - sortedPings[0]));
 
-    const finalDl = await runEngine('DOWNLOAD');
-    setDownloadSpeed(finalDl);
+    const dl = await runTest('DOWNLOAD');
+    setDownloadSpeed(dl);
     setPhase(TestPhase.TRANSITION);
     setGaugeValue(0);
     await new Promise(r => setTimeout(r, 1500));
 
-    const finalUl = await runEngine('UPLOAD');
-    setUploadSpeed(finalUl);
+    const ul = await runTest('UPLOAD');
+    setUploadSpeed(ul);
     
     setPhase(TestPhase.COMPLETE);
     setGaugeValue(0);
@@ -279,12 +299,11 @@ const App: React.FC = () => {
     const result: TestResult = {
       id: Date.now(),
       date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' }),
-      download: finalDl,
-      upload: finalUl,
+      download: dl,
+      upload: ul,
       ping: avgPing,
       jitter: Math.round(sortedPings[sortedPings.length - 1] - sortedPings[0])
     };
-    
     setHistory(prev => {
       const next = [result, ...prev].slice(0, 20);
       localStorage.setItem('velocity_v2_history', JSON.stringify(next));
@@ -338,7 +357,7 @@ const App: React.FC = () => {
             </div>
             <div className="flex flex-col md:flex-row gap-5 max-w-2xl mx-auto">
               <button onClick={startTest} className="flex-[3] py-6 bg-blue-600 rounded-3xl font-black uppercase tracking-[0.3em] text-sm shadow-2xl shadow-blue-600/30 animate-pulse-cta hover:bg-blue-500 transition-all">
-                Re-Test Engine
+                Re-test Speed
               </button>
               <button onClick={() => setShowResultOverlay(false)} className="flex-1 py-6 glass border-white/10 rounded-3xl font-bold uppercase tracking-widest text-xs hover:bg-white/5 transition-all">
                 Dismiss
@@ -348,7 +367,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Header */}
       <header className="w-full max-w-6xl flex justify-between items-center py-6">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 md:w-12 md:h-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-2xl shadow-blue-600/50">
@@ -364,7 +382,6 @@ const App: React.FC = () => {
         </button>
       </header>
 
-      {/* Main Container */}
       <main className="flex-1 w-full max-w-6xl flex flex-col items-center justify-center py-8 gap-8 md:gap-16">
         {showHistory ? (
           <div className="w-full max-w-2xl glass rounded-[3rem] p-10 animate-in slide-in-from-bottom-8 duration-500">
@@ -397,7 +414,6 @@ const App: React.FC = () => {
         ) : (
           <>
             <div className="flex flex-col lg:flex-row items-center gap-12 md:gap-16 w-full">
-              {/* Left Column */}
               <div className="order-2 lg:order-1 w-full lg:w-1/4">
                 <StatsCard 
                   label="Download" 
@@ -409,8 +425,6 @@ const App: React.FC = () => {
                   activeGlow="ring-blue-500/50"
                 />
               </div>
-              
-              {/* Center Column */}
               <div className="order-1 lg:order-2 flex flex-col items-center gap-10 w-full lg:w-2/4">
                 <SpeedGauge value={gaugeValue} phase={phase} progress={progress} />
                 <button 
@@ -421,8 +435,6 @@ const App: React.FC = () => {
                   {phase === TestPhase.IDLE || phase === TestPhase.COMPLETE ? 'LAUNCH' : 'BENCHMARKING'}
                 </button>
               </div>
-
-              {/* Right Column */}
               <div className="order-3 lg:order-3 w-full lg:w-1/4">
                 <StatsCard 
                   label="Upload" 
@@ -435,8 +447,6 @@ const App: React.FC = () => {
                 />
               </div>
             </div>
-
-            {/* Bottom Meta Bar */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6 w-full max-w-5xl">
               <NetworkInfo icon="fa-stopwatch" label="Latency" value={`${phase === TestPhase.IDLE ? livePing : ping} ms`} highlight />
               <NetworkInfo icon="fa-signal" label="Jitter" value={`${jitter} ms`} highlight />
