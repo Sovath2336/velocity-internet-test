@@ -131,8 +131,55 @@ const SERVERS = [
 
 const TEST_CONFIG = {
   DURATION: 12000,
-  RAMP_UP: 2500,
-  THREADS: 12, // Increased for better saturation
+  RAMP_UP: 3500,           // Extended from 2.5s to 3.5s for better TCP stabilization
+  THREADS: 12,
+  SAMPLE_INTERVAL: 500,    // Sample every 500ms instead of every frame (60fps)
+  PROGRESS_THROTTLE: 100,  // Throttle progress events to max 10/second
+  STABILITY_THRESHOLD: 0.05, // 5% variance for plateau detection
+  STABILITY_COUNT: 4,      // Need 4 consecutive stable samples to declare plateau
+};
+
+// Generate cryptographically random cache-busting ID
+const generateCacheBuster = (): string => {
+  const array = new Uint32Array(2);
+  crypto.getRandomValues(array);
+  return `${array[0].toString(36)}${array[1].toString(36)}`;
+};
+
+// Calculate moving median for robust speed estimation
+const calculateMovingMedian = (samples: number[], windowSize: number = 5): number => {
+  if (samples.length === 0) return 0;
+  if (samples.length < windowSize) {
+    const sorted = [...samples].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+  const window = samples.slice(-windowSize);
+  const sorted = [...window].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+};
+
+// Check if measurements have stabilized (plateau detection)
+const checkStability = (samples: number[], threshold: number, count: number): boolean => {
+  if (samples.length < count) return false;
+  const recent = samples.slice(-count);
+  const median = calculateMovingMedian(recent, count);
+  if (median === 0) return false;
+  return recent.every(s => Math.abs(s - median) / median <= threshold);
+};
+
+// Calculate final speed using trimmed mean with moving median validation
+const calculateFinalSpeed = (samples: number[]): number => {
+  if (samples.length === 0) return 0;
+  if (samples.length < 3) return samples[samples.length - 1];
+
+  const sorted = [...samples].sort((a, b) => a - b);
+  // Use 25th to 85th percentile for more robust measurement
+  const start = Math.floor(sorted.length * 0.25);
+  const end = Math.floor(sorted.length * 0.85);
+  const validSamples = sorted.slice(start, Math.max(end, start + 1));
+
+  if (validSamples.length === 0) return sorted[Math.floor(sorted.length / 2)];
+  return validSamples.reduce((a, b) => a + b, 0) / validSamples.length;
 };
 
 const App: React.FC = () => {
@@ -157,14 +204,25 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Only poll live ping when idle or complete - disabled during active tests
     if (phase !== TestPhase.IDLE && phase !== TestPhase.COMPLETE) return;
-    const interval = setInterval(async () => {
+
+    const pollPing = async () => {
       const s = performance.now();
       try {
-        await fetch(selectedServer.traceUrl, { mode: 'no-cors', cache: 'no-store' });
+        const cacheBuster = generateCacheBuster();
+        const pingUrl = selectedServer.traceUrl.includes('?')
+          ? `${selectedServer.traceUrl}&cb=${cacheBuster}`
+          : `${selectedServer.traceUrl}?cb=${cacheBuster}`;
+        await fetch(pingUrl, { mode: 'no-cors', cache: 'no-store' });
         setLivePing(Math.round(performance.now() - s));
       } catch {}
-    }, 3000);
+    };
+
+    // Initial poll
+    pollPing();
+
+    const interval = setInterval(pollPing, 3000);
     return () => clearInterval(interval);
   }, [phase, selectedServer]);
 
@@ -174,34 +232,70 @@ const App: React.FC = () => {
     const threadLoads = new Array(TEST_CONFIG.THREADS).fill(0);
     const samples: number[] = [];
     const activeRequests: XMLHttpRequest[] = [];
-    
+    let isAborted = false;
+    let lastSampleTime = 0;
+    let animationFrameId: number | null = null;
+
     // Large upload payload for accuracy
     const uploadChunk = new Uint8Array(4 * 1024 * 1024);
 
+    // Optimized UI update - samples every SAMPLE_INTERVAL ms instead of every frame
     const updateUI = () => {
+      if (isAborted) return;
+
       const now = performance.now();
       const elapsed = now - start;
       const currentProgress = Math.min((elapsed / TEST_CONFIG.DURATION) * 100, 100);
       setProgress(currentProgress);
 
-      if (elapsed > TEST_CONFIG.RAMP_UP) {
+      // Only sample at defined intervals (500ms) instead of every frame (16ms)
+      if (elapsed > TEST_CONFIG.RAMP_UP && now - lastSampleTime >= TEST_CONFIG.SAMPLE_INTERVAL) {
+        lastSampleTime = now;
         const totalBytes = threadLoads.reduce((a, b) => a + b, 0);
-        const mbps = (totalBytes * 8) / (elapsed * 1000);
-        samples.push(mbps);
-        setGaugeValue(mbps);
-        if (type === 'DOWNLOAD') setDownloadSpeed(mbps); else setUploadSpeed(mbps);
+        const effectiveElapsed = elapsed - TEST_CONFIG.RAMP_UP;
+        const mbps = effectiveElapsed > 0 ? (totalBytes * 8) / (effectiveElapsed * 1000) : 0;
+
+        if (mbps > 0) {
+          samples.push(mbps);
+          const displaySpeed = calculateMovingMedian(samples);
+          setGaugeValue(displaySpeed);
+          if (type === 'DOWNLOAD') setDownloadSpeed(displaySpeed);
+          else setUploadSpeed(displaySpeed);
+
+          // Early termination if measurements have stabilized (plateau detection)
+          if (samples.length >= TEST_CONFIG.STABILITY_COUNT * 2 &&
+              checkStability(samples, TEST_CONFIG.STABILITY_THRESHOLD, TEST_CONFIG.STABILITY_COUNT) &&
+              elapsed > TEST_CONFIG.RAMP_UP + 3000) { // Min 3s after ramp-up
+            isAborted = true;
+            activeRequests.forEach(xhr => { try { xhr.abort(); } catch {} });
+            return;
+          }
+        }
+      } else if (elapsed > TEST_CONFIG.RAMP_UP) {
+        // Update gauge more frequently for smooth animation, but don't sample
+        const totalBytes = threadLoads.reduce((a, b) => a + b, 0);
+        const effectiveElapsed = elapsed - TEST_CONFIG.RAMP_UP;
+        const mbps = effectiveElapsed > 0 ? (totalBytes * 8) / (effectiveElapsed * 1000) : 0;
+        if (mbps > 0) setGaugeValue(mbps);
       }
 
-      if (elapsed < TEST_CONFIG.DURATION) {
-        requestAnimationFrame(updateUI);
+      if (elapsed < TEST_CONFIG.DURATION && !isAborted) {
+        animationFrameId = requestAnimationFrame(updateUI);
       }
     };
 
-    requestAnimationFrame(updateUI);
+    animationFrameId = requestAnimationFrame(updateUI);
 
     const spawnThread = (id: number) => {
       return new Promise<void>((resolve) => {
+        let lastProgressTime = 0;
+
         const loop = () => {
+          if (isAborted) {
+            resolve();
+            return;
+          }
+
           const now = performance.now();
           if (now - start >= TEST_CONFIG.DURATION) {
             resolve();
@@ -210,20 +304,35 @@ const App: React.FC = () => {
 
           const xhr = new XMLHttpRequest();
           activeRequests.push(xhr);
-          const url = `${type === 'DOWNLOAD' ? selectedServer.downloadUrl : selectedServer.uploadUrl}?t=${Date.now()}&w=${id}`;
-          
+
+          // Improved cache busting with crypto-random IDs
+          const cacheBuster = generateCacheBuster();
+          const url = `${type === 'DOWNLOAD' ? selectedServer.downloadUrl : selectedServer.uploadUrl}?cb=${cacheBuster}&w=${id}`;
+
           xhr.open(type === 'DOWNLOAD' ? 'GET' : 'POST', url, true);
-          
+
           let lastLoaded = 0;
+
+          // Throttled progress handler - max 10 events per second per thread
           const onProgress = (e: ProgressEvent) => {
             const currentNow = performance.now();
-            if (currentNow - start >= TEST_CONFIG.DURATION) {
-              xhr.abort();
+
+            if (isAborted || currentNow - start >= TEST_CONFIG.DURATION) {
+              try { xhr.abort(); } catch {}
               return;
             }
+
+            // Throttle progress events
+            if (currentNow - lastProgressTime < TEST_CONFIG.PROGRESS_THROTTLE) {
+              return;
+            }
+            lastProgressTime = currentNow;
+
             const delta = e.loaded - lastLoaded;
-            threadLoads[id] += delta;
-            lastLoaded = e.loaded;
+            if (delta > 0) {
+              threadLoads[id] += delta;
+              lastLoaded = e.loaded;
+            }
           };
 
           if (type === 'DOWNLOAD') {
@@ -233,7 +342,11 @@ const App: React.FC = () => {
           }
 
           xhr.onload = xhr.onerror = xhr.onabort = () => {
-            if (performance.now() - start < TEST_CONFIG.DURATION) {
+            // Remove from active requests to prevent memory leak
+            const idx = activeRequests.indexOf(xhr);
+            if (idx > -1) activeRequests.splice(idx, 1);
+
+            if (!isAborted && performance.now() - start < TEST_CONFIG.DURATION) {
               loop();
             } else {
               resolve();
@@ -251,13 +364,16 @@ const App: React.FC = () => {
     };
 
     await Promise.all(Array.from({ length: TEST_CONFIG.THREADS }).map((_, i) => spawnThread(i)));
-    activeRequests.forEach(xhr => xhr.abort());
+
+    // Cleanup
+    isAborted = true;
+    if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    activeRequests.forEach(xhr => { try { xhr.abort(); } catch {} });
 
     if (samples.length === 0) return 0;
-    // Accuracy strategy: discard extremes, use mid-to-high percentile for "stable peak"
-    const sorted = samples.sort((a, b) => a - b);
-    const validSamples = sorted.slice(Math.floor(sorted.length * 0.3), Math.floor(sorted.length * 0.9));
-    return validSamples.length > 0 ? validSamples.reduce((a, b) => a + b, 0) / validSamples.length : sorted[sorted.length - 1];
+
+    // Use improved calculation with trimmed mean
+    return calculateFinalSpeed(samples);
   };
 
   const startTest = async () => {
@@ -269,19 +385,30 @@ const App: React.FC = () => {
     setUploadSpeed(0);
     setGaugeValue(0);
 
-    const pings = [];
-    for(let i=0; i<10; i++) {
+    const pings: number[] = [];
+    for (let i = 0; i < 10; i++) {
       const s = performance.now();
-      try { 
-        await fetch(selectedServer.traceUrl, { mode: 'no-cors', cache: 'no-store' }); 
-        pings.push(performance.now() - s); 
-      } catch { pings.push(999); }
+      try {
+        // Use cache buster to prevent cached responses affecting latency measurement
+        const cacheBuster = generateCacheBuster();
+        const pingUrl = selectedServer.traceUrl.includes('?')
+          ? `${selectedServer.traceUrl}&cb=${cacheBuster}`
+          : `${selectedServer.traceUrl}?cb=${cacheBuster}`;
+        await fetch(pingUrl, { mode: 'no-cors', cache: 'no-store' });
+        pings.push(performance.now() - s);
+      } catch {
+        pings.push(999);
+      }
       await new Promise(r => setTimeout(r, 100));
     }
-    const sortedPings = pings.sort((a,b) => a - b);
-    const avgPing = Math.round(sortedPings.slice(0, 5).reduce((a,b) => a+b, 0) / 5);
+    const sortedPings = [...pings].sort((a, b) => a - b);
+    // Use median of lower half for more stable ping measurement
+    const avgPing = Math.round(sortedPings.slice(0, 5).reduce((a, b) => a + b, 0) / 5);
     setPing(avgPing);
-    setJitter(Math.round(sortedPings[sortedPings.length - 1] - sortedPings[0]));
+    // Jitter calculation using interquartile range for robustness
+    const q1 = sortedPings[Math.floor(sortedPings.length * 0.25)];
+    const q3 = sortedPings[Math.floor(sortedPings.length * 0.75)];
+    setJitter(Math.round(q3 - q1));
 
     const dl = await runTest('DOWNLOAD');
     setDownloadSpeed(dl);
@@ -302,7 +429,7 @@ const App: React.FC = () => {
       download: dl,
       upload: ul,
       ping: avgPing,
-      jitter: Math.round(sortedPings[sortedPings.length - 1] - sortedPings[0])
+      jitter: Math.round(q3 - q1) // Use IQR for consistent jitter calculation
     };
     setHistory(prev => {
       const next = [result, ...prev].slice(0, 20);
